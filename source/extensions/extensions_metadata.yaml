@@ -405,6 +405,16 @@ envoy.filters.http.buffer:
   type_urls:
   - envoy.extensions.filters.http.buffer.v3.Buffer
   - envoy.extensions.filters.http.buffer.v3.BufferPerRoute
+envoy.filters.http.my_cache:
+  categories:
+  - envoy.filters.http
+  - envoy.filters.http.upstream
+  security_posture: robust_to_untrusted_downstream
+  status: stable
+  status_upstream: stable
+  type_urls:
+  - envoy.extensions.filters.http.buffer.v3.Buffer
+  - envoy.extensions.filters.http.buffer.v3.BufferPerRoute
 envoy.filters.http.cache:
   categories:
   - envoy.filters.http

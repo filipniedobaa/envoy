@@ -175,6 +175,7 @@ EXTENSIONS = {
     "envoy.filters.http.bandwidth_share":               "//source/extensions/filters/http/bandwidth_share:config",
     "envoy.filters.http.basic_auth":                    "//source/extensions/filters/http/basic_auth:config",
     "envoy.filters.http.buffer":                        "//source/extensions/filters/http/buffer:config",
+    "envoy.filters.http.my_cache":                      "//source/extensions/filters/http/my_cache:config",
     "envoy.filters.http.cache":                         "//source/extensions/filters/http/cache:config",
     "envoy.filters.http.cache_v2":                      "//source/extensions/filters/http/cache_v2:config",
     "envoy.filters.http.cdn_loop":                      "//source/extensions/filters/http/cdn_loop:config",
