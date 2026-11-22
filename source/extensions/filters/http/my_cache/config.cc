@@ -9,6 +9,7 @@
 
 #include "source/extensions/filters/http/my_cache/my_cache_filter.h"
 #include "source/extensions/filters/http/my_cache/my_cache.h"
+#include "envoy/upstream/cluster_manager.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -19,13 +20,14 @@ namespace MyCacheFilter {
 absl::StatusOr<Envoy::Http::FilterFactoryCb> 
 MyCacheFilterFactory::createHttpFilterFactoryFromProtoTyped(
       const envoy::extensions::filters::http::my_cache::v3::MyCache&,
-      Server::Configuration::ServerFactoryContext&,
+      Server::Configuration::ServerFactoryContext& context,
       Server::Configuration::ExtraFactoryContext&) {
   
   MyCacheSharedPtr cache = std::make_shared<MyCache>();
+  Upstream::ClusterManager& cluster_manager = context.clusterManager();
 
-  return [cache](Http::FilterChainFactoryCallbacks& callbacks){
-    callbacks.addStreamFilter(std::make_shared<MyCacheFilter>(cache));
+  return [cache, &cluster_manager](Http::FilterChainFactoryCallbacks& callbacks){
+    callbacks.addStreamFilter(std::make_shared<MyCacheFilter>(cache, cluster_manager));
   };
   
 }

@@ -10,6 +10,16 @@ licenses(["notice"])  # Apache 2
 envoy_extension_package()
 
 envoy_cc_library(
+    name = "cacheability_lib",
+    srcs = ["cacheability.cc"],
+    hdrs = ["cacheability.h"],
+    deps = [
+        "//envoy/http:header_map_interface",
+        "@abseil-cpp//absl/strings",
+    ],
+)
+
+envoy_cc_library(
     name = "my_cache_lib",
     srcs = ["my_cache.cc"],
     hdrs = ["my_cache.h"],
@@ -23,12 +33,31 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
+    name = "in_flight_lib",
+    srcs = ["in_flight.cc"],
+    hdrs = ["in_flight.h"],
+    deps = [
+        ":cacheability_lib",
+        ":my_cache_lib",
+        "//envoy/common:time_interface",
+        "//envoy/http:async_client_interface",
+        "//envoy/http:filter_interface",
+        "//envoy/upstream:cluster_manager_interface",
+        "//source/common/http:header_map_lib",
+    ],
+)
+
+envoy_cc_library(
     name = "my_cache_filter_lib",
     srcs = ["my_cache_filter.cc"],
     hdrs = ["my_cache_filter.h"],
     deps = [
+        ":cacheability_lib",
         ":my_cache_lib",
+        ":in_flight_lib",
         "//envoy/http:filter_interface",
+        "//envoy/upstream:cluster_manager_interface",
+        "//envoy/upstream:thread_local_cluster_interface",
         "//source/common/buffer:buffer_lib",
         "//source/common/http:header_map_lib",
         "//source/common/http:headers_lib",
