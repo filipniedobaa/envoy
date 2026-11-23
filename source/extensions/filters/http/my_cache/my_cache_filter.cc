@@ -102,6 +102,8 @@ void MyCacheFilter::onReset(){
 
 void MyCacheFilter::onDestroy(){ //called by dispatcher?
   destroyed_ = true;
+  //because envoy call onDestroy() first and deletes the object later,
+  //so callbacks would be invalid
 }
 
 
