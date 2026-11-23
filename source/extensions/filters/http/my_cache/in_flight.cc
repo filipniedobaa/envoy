@@ -141,7 +141,7 @@ void InFlight::onComplete(){
 
 void InFlight::onReset(){
   State prev_state = State::Waiting; //init only cause of Werror
-  if(destroying_)return;
+  if(destroying_)return; //prevents crash from self triggering std::terminate
   {
     absl::MutexLock lock(&mutex_);
     if(state_ == State::Done) return;

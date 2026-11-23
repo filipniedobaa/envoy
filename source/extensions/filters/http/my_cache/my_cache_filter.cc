@@ -20,8 +20,10 @@ namespace MyCacheFilter {
 
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers,
                                                        bool) {
-  if (headers.getMethodValue() != "GET")
+  if(headers.getMethodValue() != "GET") 
     return Http::FilterHeadersStatus::Continue;
+
+  if(!isCacheable(headers)) return Http::FilterHeadersStatus::Continue;
 
   std::string key = absl::StrCat(headers.getHostValue(), headers.getPathValue());
 
