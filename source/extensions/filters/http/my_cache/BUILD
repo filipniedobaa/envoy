@@ -21,48 +21,24 @@ envoy_cc_library(
 
 envoy_cc_library(
     name = "my_cache_lib",
-    srcs = ["my_cache.cc"],
-    hdrs = ["my_cache.h"],
-    deps = [
-        "//envoy/common:time_interface",
-        "//envoy/http:header_map_interface",
-        "//source/common/http:header_map_lib",
-        "@abseil-cpp//absl/container:flat_hash_map",
-        "@abseil-cpp//absl/synchronization",
-    ],
-)
-
-envoy_cc_library(
-    name = "in_flight_lib",
-    srcs = ["in_flight.cc"],
-    hdrs = ["in_flight.h"],
+    srcs = ["my_cache.cc", "in_flight.cc", "my_cache_filter.cc"],
+    hdrs = ["my_cache.h", "in_flight.h", "my_cache_filter.h"],
     deps = [
         ":cacheability_lib",
-        ":my_cache_lib",
         "//envoy/common:time_interface",
+        "//envoy/event:dispatcher_interface",
         "//envoy/http:async_client_interface",
         "//envoy/http:filter_interface",
-        "//envoy/upstream:cluster_manager_interface",
-        "//source/common/http:header_map_lib",
-    ],
-)
-
-envoy_cc_library(
-    name = "my_cache_filter_lib",
-    srcs = ["my_cache_filter.cc"],
-    hdrs = ["my_cache_filter.h"],
-    deps = [
-        ":cacheability_lib",
-        ":my_cache_lib",
-        ":in_flight_lib",
-        "//envoy/http:filter_interface",
+        "//envoy/http:header_map_interface",
         "//envoy/upstream:cluster_manager_interface",
         "//envoy/upstream:thread_local_cluster_interface",
         "//source/common/buffer:buffer_lib",
         "//source/common/http:header_map_lib",
         "//source/common/http:headers_lib",
         "//source/extensions/filters/http/common:pass_through_filter_lib",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@abseil-cpp//absl/strings",
+        "@abseil-cpp//absl/synchronization",
     ],
 )
 
@@ -71,9 +47,10 @@ envoy_cc_extension(
     srcs = ["config.cc"],
     hdrs = ["config.h"],
     deps = [
-        ":my_cache_filter_lib",
+        ":my_cache_lib",
         "//envoy/registry",
         "//source/extensions/filters/http/common:factory_base_lib",
         "@envoy_api//envoy/extensions/filters/http/my_cache/v3:pkg_cc_proto",
+        "//envoy/upstream:cluster_manager_interface",
     ],
 )

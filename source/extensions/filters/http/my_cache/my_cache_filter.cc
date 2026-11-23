@@ -20,47 +20,91 @@ namespace MyCacheFilter {
 
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers,
                                                        bool) {
-
   if (headers.getMethodValue() != "GET")
     return Http::FilterHeadersStatus::Continue;
 
   std::string key = absl::StrCat(headers.getHostValue(), headers.getPathValue());
 
-  EntrySharedPtr entry =
-      cache_->lookup(key, decoder_callbacks_->dispatcher().timeSource().monotonicTime());
+  LookupResult lookup_result =
+      cache_->lookup_or_follow(key, 
+                               decoder_callbacks_->dispatcher().timeSource().monotonicTime(),
+                               weak_from_this(),
+                               &decoder_callbacks_->dispatcher());
+  switch (lookup_result.kind)
+  {
+    case LookupResult::Kind::Hit:
+    {
+      auto headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*lookup_result.entry->headers);
+      headers->addCopy(Http::LowerCaseString("my-cache"), "HIT");
 
-  if (entry) {
-    // HIT
-    auto headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*entry->headers);
-    headers->addCopy(Http::LowerCaseString("my-cache"), "HIT");
+      decoder_callbacks_->encodeHeaders(std::move(headers), lookup_result.entry->body.empty(), "HIT");
 
-    decoder_callbacks_->encodeHeaders(std::move(headers), entry->body.empty(), "HIT");
-
-    if (!entry->body.empty()) {
-      Buffer::OwnedImpl body(entry->body);
-      decoder_callbacks_->encodeData(body, true);
+      if (!lookup_result.entry->body.empty()) {
+        Buffer::OwnedImpl body(lookup_result.entry->body);
+        decoder_callbacks_->encodeData(body, true);
+      }
+      return Http::FilterHeadersStatus::StopIteration;
     }
-    return Http::FilterHeadersStatus::StopIteration;
-  }
 
-  // MISS
-  Upstream::ThreadLocalCluster* cluster = cluster_manager_.getThreadLocalCluster("origin");
-  if(cluster == nullptr){
-    decoder_callbacks_->sendLocalReply(Http::Code::ServiceUnavailable,
-                                       "decoding headers failed",
-                                       nullptr, std::nullopt,
-                                       "my_cache_no_cluster");
-    return Http::FilterHeadersStatus::StopIteration;
+    case LookupResult::Kind::Leader:
+    {
+      Upstream::ThreadLocalCluster* cluster = cluster_manager_.getThreadLocalCluster("origin");
+      if(cluster == nullptr
+      || !lookup_result.in_flight->start(*cluster, Http::createHeaderMap<Http::RequestHeaderMapImpl>(headers))){
+        
+        lookup_result.in_flight->fail();
+      }
+      return Http::FilterHeadersStatus::StopIteration;
+    }
+    case LookupResult::Kind::Follower:
+    {
+      return Http::FilterHeadersStatus::StopIteration;
+    }
   }
-
-  in_flight_ = std::make_unique<InFlight>(*decoder_callbacks_, cache_, key);
-  bool tmp = in_flight_->start(*cluster, Http::createHeaderMap<Http::RequestHeaderMapImpl>(headers));
-  if(!tmp) decoder_callbacks_->sendLocalReply(Http::Code::ServiceUnavailable,
-                                              "decoding headers failed",
-                                              nullptr, std::nullopt,
-                                              "my_cache_fetch_start_failed");
-  return Http::FilterHeadersStatus::StopIteration;
+  return Http::FilterHeadersStatus::StopIteration; //OR PANIC
 }
+
+void MyCacheFilter::onHeaders(Http::ResponseHeaderMapPtr headers, bool end_stream){
+  if(destroyed_ || done_) return;
+  decoder_callbacks_->encodeHeaders(std::move(headers), end_stream, "my_cache_miss");
+}
+
+void MyCacheFilter::onData(const std::string& data, bool end_stream){
+  if(destroyed_ || done_) return;
+  Buffer::OwnedImpl buffer(data);
+  decoder_callbacks_->encodeData(buffer, end_stream);
+}
+
+void MyCacheFilter::onTrailers(Http::ResponseTrailerMapPtr trailers){
+  if(destroyed_ || done_) return;
+  decoder_callbacks_->encodeTrailers(std::move(trailers));
+}
+
+void MyCacheFilter::onComplete(){
+  if(destroyed_ || done_) return;
+  done_ = true;
+  Buffer::OwnedImpl empty_body("");
+  decoder_callbacks_->encodeData(empty_body, true);
+}
+void MyCacheFilter::onFail(){
+  if(destroyed_ || done_) return;
+  done_ = true;
+  decoder_callbacks_->sendLocalReply(Http::Code::ServiceUnavailable,
+                                       "upstream fetch failed",
+                                       nullptr, std::nullopt,
+                                       "upstream_fetch_failed");
+}
+void MyCacheFilter::onReset(){
+  if(destroyed_ || done_) return;
+  done_ = true;
+  decoder_callbacks_->resetStream();
+}
+
+void MyCacheFilter::onDestroy(){ //called by dispatcher?
+  destroyed_ = true;
+}
+
+
 } // namespace MyCacheFilter
 } // namespace HttpFilters
 } // namespace Extensions

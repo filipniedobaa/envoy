@@ -10,6 +10,7 @@
 #include "source/extensions/filters/http/my_cache/my_cache_filter.h"
 #include "source/extensions/filters/http/my_cache/my_cache.h"
 #include "envoy/upstream/cluster_manager.h"
+#include "source/extensions/filters/http/my_cache/in_flight.h"
 
 namespace Envoy {
 namespace Extensions {
@@ -24,6 +25,7 @@ MyCacheFilterFactory::createHttpFilterFactoryFromProtoTyped(
       Server::Configuration::ExtraFactoryContext&) {
   
   MyCacheSharedPtr cache = std::make_shared<MyCache>();
+  
   Upstream::ClusterManager& cluster_manager = context.clusterManager();
 
   return [cache, &cluster_manager](Http::FilterChainFactoryCallbacks& callbacks){

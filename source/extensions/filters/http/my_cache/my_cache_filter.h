@@ -12,7 +12,8 @@ namespace HttpFilters {
 namespace MyCacheFilter {
 
 
-class MyCacheFilter : public Http::PassThroughFilter{
+class MyCacheFilter : public Http::PassThroughFilter, 
+                      public std::enable_shared_from_this<MyCacheFilter>{
 public:
   explicit MyCacheFilter(MyCacheSharedPtr cache,
                          Upstream::ClusterManager& cluster_manager)
@@ -22,13 +23,20 @@ public:
     Http::RequestHeaderMap& headers,
     bool end_stream) override;
 
-private:
+  void onDestroy() override;
+  
+  void onHeaders(Http::ResponseHeaderMapPtr headers, bool end_stream);
+  void onComplete();
+  void onData(const std::string& data, bool end_stream);
+  void onTrailers(Http::ResponseTrailerMapPtr trailers);
+  void onFail();
+  void onReset();
 
+private:
   MyCacheSharedPtr cache_;
   Upstream::ClusterManager& cluster_manager_;
-
-  std::unique_ptr<InFlight> in_flight_ = nullptr;
-
+  bool destroyed_ = false;
+  bool done_ = false;
 };
 
 } // namespace MyCacheFilter

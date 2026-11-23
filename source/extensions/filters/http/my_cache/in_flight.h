@@ -4,17 +4,33 @@
 #include "source/common/http/header_map_impl.h"
 #include "envoy/http/filter.h"
 #include "envoy/upstream/thread_local_cluster.h"
+#include "envoy/event/dispatcher.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
 
-class InFlight : public Http::AsyncClient::StreamCallbacks{
+class MyCacheFilter;
+
+class InFlight : public Http::AsyncClient::StreamCallbacks,
+                 public std::enable_shared_from_this<InFlight>{
+
+  enum class State {Waiting, HeadersArrived, Done};
+
+  struct Follower{
+      std::weak_ptr<MyCacheFilter> filter;
+      Event::Dispatcher* dispatcher;
+  };
+
+  template <class Fn>
+  void postToFollowers(const std::vector<Follower>& followers, Fn fn);
+
+
 public:
-  InFlight(Http::StreamDecoderFilterCallbacks& callbacks,
-           MyCacheSharedPtr cache,
-           std::string key);
+  InFlight(std::weak_ptr<MyCache> cache,
+           const std::string& key,
+           TimeSource& time_source);
 
   ~InFlight() override;
 
@@ -26,23 +42,31 @@ public:
   void onTrailers(Http::ResponseTrailerMapPtr&& trailers) override;
   void onComplete() override;
   void onReset() override;
+  void fail();
+
+  void addFollower(std::weak_ptr<MyCacheFilter> filter, Event::Dispatcher* dispatcher);
 
 private:
-    MyCacheSharedPtr cache_;
+    std::weak_ptr<MyCache> cache_;
     std::string key_;
+    TimeSource& time_source_;
     std::shared_ptr<Entry> entry_ = nullptr;
 
     bool cacheable_ = false;
     bool destroying_ = false;
-    bool headers_sent_ = false;
-
-    Http::RequestHeaderMapPtr request_headers_;
-    Http::StreamDecoderFilterCallbacks& callbacks_;
-    Http::AsyncClient::Stream* stream_{nullptr};
-
+    State state_ = State::Waiting;
     
 
+    Http::RequestHeaderMapPtr request_headers_;
+    Http::ResponseHeaderMapPtr response_headers_;
+    std::vector<Follower> followers_;
+    Http::AsyncClient::Stream* stream_{nullptr};
+
+    absl::Mutex mutex_;
+
 };
+
+using InFlightSharedPtr = std::shared_ptr<InFlight>;
 
 } // namespace MyCacheFilter
 } // namespace HttpFilters
