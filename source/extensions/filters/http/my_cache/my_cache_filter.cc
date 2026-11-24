@@ -23,7 +23,7 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
   if(headers.getMethodValue() != "GET") 
     return Http::FilterHeadersStatus::Continue;
 
-  if(!isCacheable(headers)) return Http::FilterHeadersStatus::Continue;
+  if(!requestMayCache(headers)) return Http::FilterHeadersStatus::Continue;
 
   std::string key = absl::StrCat(headers.getHostValue(), headers.getPathValue());
 
@@ -38,6 +38,13 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
     {
       auto headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*lookup_result.entry->headers);
       headers->addCopy(Http::LowerCaseString("my-cache"), "HIT");
+
+      std::chrono::seconds age = std::chrono::duration_cast<std::chrono::seconds>(
+        decoder_callbacks_->dispatcher().timeSource().monotonicTime()
+        - lookup_result.entry->born_at);
+
+      headers->setCopy(Http::LowerCaseString("age"),
+                       std::to_string(age.count()));
 
       decoder_callbacks_->encodeHeaders(std::move(headers), lookup_result.entry->body.empty(), "HIT");
 
@@ -61,6 +68,10 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
     case LookupResult::Kind::Follower:
     {
       return Http::FilterHeadersStatus::StopIteration;
+    }
+    case LookupResult::Kind::NonShareable:
+    {
+      return Http::FilterHeadersStatus::Continue;
     }
   }
   return Http::FilterHeadersStatus::StopIteration; //OR PANIC
@@ -106,6 +117,11 @@ void MyCacheFilter::onDestroy(){ //called by dispatcher?
   destroyed_ = true;
   //because envoy call onDestroy() first and deletes the object later,
   //so callbacks would be invalid
+}
+
+void MyCacheFilter::onBypass(){
+  if(destroyed_ || done_) return;
+  decoder_callbacks_->continueDecoding();
 }
 
 

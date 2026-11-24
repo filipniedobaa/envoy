@@ -44,7 +44,7 @@ public:
   void onReset() override;
   void fail();
 
-  void addFollower(std::weak_ptr<MyCacheFilter> filter, Event::Dispatcher* dispatcher);
+  bool addFollower(std::weak_ptr<MyCacheFilter> filter, Event::Dispatcher* dispatcher);
 
 private:
     std::weak_ptr<MyCache> cache_;
@@ -53,6 +53,7 @@ private:
     std::shared_ptr<Entry> entry_ = nullptr;
 
     bool cacheable_ = false;
+    bool shareable_ = false;
     bool destroying_ = false;
     State state_ = State::Waiting;
     

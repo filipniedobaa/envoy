@@ -31,6 +31,7 @@ public:
   void onTrailers(Http::ResponseTrailerMapPtr trailers);
   void onFail();
   void onReset();
+  void onBypass();
 
 private:
   MyCacheSharedPtr cache_;

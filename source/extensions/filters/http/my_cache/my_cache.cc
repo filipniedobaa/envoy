@@ -31,7 +31,7 @@ LookupResult MyCache::lookup_or_follow(const std::string& key,
 
     auto it = map_.find(key);
     if(it != map_.end()){
-      if(it->second->expires_at <= now) {
+      if(it->second->born_at + it->second->life_time <= now) {
         //IS CACHED BUT EXPIRED
         //absl::MutexLock deleteLock(&cache_mutex_);
         //map_.erase(key);
@@ -59,7 +59,10 @@ LookupResult MyCache::lookup_or_follow(const std::string& key,
     }
 
     //WE ARE THE FOLLOWER
-    in_flight_record->second->addFollower(filter, dispatcher);
+    if(!in_flight_record->second->addFollower(filter, dispatcher)){
+      res.kind = LookupResult::Kind::NonShareable;
+      return res;
+    }
     res.in_flight = in_flight_record->second;
     res.kind = LookupResult::Kind::Follower;
     return res;

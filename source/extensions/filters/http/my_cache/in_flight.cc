@@ -33,11 +33,13 @@ InFlight::~InFlight(){
   if(stream_ != nullptr) stream_->reset();
 }
 
-void InFlight::addFollower(std::weak_ptr<MyCacheFilter> filter,
+bool InFlight::addFollower(std::weak_ptr<MyCacheFilter> filter,
                            Event::Dispatcher* dispatcher){
   absl::MutexLock lock(&mutex_);
+  if(!shareable_ && state_ != State::Waiting) return false;
+
   followers_.push_back({filter, dispatcher});
-  if(response_headers_ == nullptr) return;
+  if(response_headers_ == nullptr) return true;
 
   
   dispatcher->post([weak = filter, 
@@ -49,6 +51,7 @@ void InFlight::addFollower(std::weak_ptr<MyCacheFilter> filter,
       strong->onData(data, false);
     }
   });
+  return true;
 }
 
 bool InFlight::start(Upstream::ThreadLocalCluster& cluster,
@@ -69,12 +72,26 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool){
 
   state_ = State::HeadersArrived;
   response_headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers);
-  std::optional<std::chrono::seconds> ttl = cacheableFor(*headers);
+  std::optional<LifeTimeAndAge> ttl = cacheableFor(*headers);
+
+  shareable_ = isShareable(*headers);
+  if(!shareable_){
+    for(size_t i = 1; i < followers_.size(); ++i){
+      const Follower& follower = followers_[i];
+      follower.dispatcher->post([weak = follower.filter](){
+        if(auto filter = weak.lock()) filter->onBypass();
+      });
+    }
+
+    followers_.erase(followers_.begin() + 1, followers_.end());
+  }
+
   entry_ = std::make_shared<Entry>();
   entry_->headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers);
   if(ttl != std::nullopt){
     cacheable_ = true;
-    entry_->expires_at = time_source_.monotonicTime() + *ttl;
+    entry_->born_at = time_source_.monotonicTime() - ttl->age;
+    entry_->life_time = ttl->lifetime;
   }
 
   for(const Follower& follower : followers_){

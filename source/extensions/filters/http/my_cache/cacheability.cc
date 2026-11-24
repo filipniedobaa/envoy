@@ -11,11 +11,10 @@
 #include "absl/strings/strip.h"
 
 namespace{
-//-------SOURCE: CLAUDE---------
-// Returns max-age in seconds, or nullopt if the header doesn't have one.
+//-------CLAUDE HELPED HERE---------
+// Returns s-maxage or max-age in seconds if unavailable, or nullopt if the header doesn't neither.
 std::optional<uint64_t> parseMaxAge(absl::string_view cache_control) {
-  bool foundLocalMaxAge = false;
-  uint64_t localMaxAge;
+  std::optional<uint64_t> localMaxAge;
   for (absl::string_view directive : absl::StrSplit(cache_control, ',')) {
     directive = absl::StripAsciiWhitespace(directive);
 
@@ -26,15 +25,13 @@ std::optional<uint64_t> parseMaxAge(absl::string_view cache_control) {
       }
     }
     else if (absl::ConsumePrefix(&directive, "max-age=")) {
-      if (absl::SimpleAtoi(directive, &localMaxAge)) {
-        foundLocalMaxAge = true;
-      }
+      uint64_t seconds;
+      if (absl::SimpleAtoi(directive, &seconds)) localMaxAge = seconds;
     }
   }
-  if(foundLocalMaxAge) return localMaxAge;
-  return std::nullopt;
+  return localMaxAge;
 }
-//------------------------------
+//----------------------------------
 }
 
 
@@ -43,7 +40,20 @@ namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
 
-bool isCacheable(const Http::RequestHeaderMap& headers){
+
+bool isShareable(const Http::ResponseHeaderMap& headers){
+  if(!headers.get(Http::LowerCaseString("Set-Cookie")).empty()) return false;
+
+  auto cc_res = headers.get(Http::LowerCaseString("cache-control"));
+  absl::string_view raw = cc_res.empty() ? "" : cc_res[0]->value().getStringView();
+  std::string cache_control = absl::AsciiStrToLower(raw);
+
+  if(absl::StrContains(cache_control, "private")) return false;
+
+  return true;
+}
+
+bool requestMayCache(const Http::RequestHeaderMap& headers){
   if(!headers.get(Http::LowerCaseString("Range")).empty()
   || !headers.get(Http::LowerCaseString("If-None-Match")).empty()
   || !headers.get(Http::LowerCaseString("If-Modified-Since")).empty()
@@ -51,19 +61,25 @@ bool isCacheable(const Http::RequestHeaderMap& headers){
   || !headers.get(Http::LowerCaseString("If-Unmodified-Since")).empty()
   || !headers.get(Http::LowerCaseString("If-Range")).empty()
   || !headers.get(Http::LowerCaseString("Authorization")).empty()
-  || !headers.get(Http::LowerCaseString("Cookie")).empty()
-  || !headers.get(Http::LowerCaseString("Range")).empty()) return false;
+  || !headers.get(Http::LowerCaseString("Cookie")).empty()) return false;
   
   return true;
 }
 
-std::optional<std::chrono::seconds> cacheableFor(const Http::ResponseHeaderMap& headers)
+std::optional<LifeTimeAndAge> cacheableFor(const Http::ResponseHeaderMap& headers)
 {
   if(headers.getStatusValue() != "200")return std::nullopt;
 
   if(!headers.get(Http::LowerCaseString("Set-Cookie")).empty()) return std::nullopt;
                                                   
   auto cc_res = headers.get(Http::LowerCaseString("cache-control"));
+  
+  auto age_res = headers.get(Http::LowerCaseString("Age"));
+  uint64_t age = 0;
+  if(!age_res.empty()) {
+    if(!absl::SimpleAtoi(age_res[0]->value().getStringView(), &age))
+      return std::nullopt;
+  }
   
 
   absl::string_view raw = cc_res.empty() ? "" : cc_res[0]->value().getStringView();
@@ -77,8 +93,8 @@ std::optional<std::chrono::seconds> cacheableFor(const Http::ResponseHeaderMap& 
   || max_age == std::nullopt)
       return std::nullopt;
   
-  return std::chrono::seconds(*max_age);
-
+  if(max_age <= age) return std::nullopt;
+  return {{std::chrono::seconds(*max_age),std::chrono::seconds(age)}};
 }
 
 } // namespace MyCacheFilter

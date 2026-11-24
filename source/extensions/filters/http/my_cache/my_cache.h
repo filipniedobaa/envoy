@@ -17,7 +17,8 @@ namespace HttpFilters {
 namespace MyCacheFilter {
 
 struct Entry{
-  MonotonicTime expires_at;
+  MonotonicTime born_at;
+  std::chrono::seconds life_time;
   Http::ResponseHeaderMapPtr headers;
   std::string body;
 };
@@ -28,7 +29,7 @@ class MyCacheFilter;
 using InFlightSharedPtr = std::shared_ptr<InFlight>;
 
 struct LookupResult {
-  enum class Kind { Hit, Follower, Leader };
+  enum class Kind { Hit, Follower, Leader, NonShareable };
   Kind kind;
   EntrySharedPtr entry = nullptr;
   InFlightSharedPtr in_flight = nullptr;
