@@ -54,6 +54,7 @@ private:
 
     bool cacheable_ = false;
     bool shareable_ = false;
+    bool too_big_to_buffer_ = false;
     bool destroying_ = false;
     State state_ = State::Waiting;
     

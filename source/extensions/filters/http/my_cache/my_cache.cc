@@ -71,7 +71,7 @@ LookupResult MyCache::lookup_or_follow(const std::string& key,
 }
 
 void MyCache::insert(const std::string& key, EntrySharedPtr entry){
-  uint64_t bytes = entry->body.size() + entry->headers->size() + key.size();
+  uint64_t bytes = entry->body.size() + entry->headers->byteSize() + key.size();
   if(bytes > kMaxObjectBytes) return;
 
   absl::MutexLock lock(&cache_mutex_);
@@ -84,7 +84,7 @@ void MyCache::insert(const std::string& key, EntrySharedPtr entry){
   lru_.push_front(key);
   slot.lru_it = lru_.begin();
   map_.insert_or_assign(key, std::move(slot));
-  total_bytes_ += slot.bytes;
+  total_bytes_ += bytes;
   remove_least_recently_used();
 }
 

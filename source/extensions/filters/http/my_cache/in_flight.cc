@@ -36,7 +36,8 @@ InFlight::~InFlight(){
 bool InFlight::addFollower(std::weak_ptr<MyCacheFilter> filter,
                            Event::Dispatcher* dispatcher){
   absl::MutexLock lock(&mutex_);
-  if(!shareable_ && state_ != State::Waiting) return false;
+  if((!shareable_ && state_ != State::Waiting)
+  || too_big_to_buffer_) return false;
 
   followers_.push_back({filter, dispatcher});
   if(response_headers_ == nullptr) return true;
@@ -72,6 +73,15 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool){
 
   state_ = State::HeadersArrived;
   response_headers_ = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers);
+
+  uint64_t content_length;
+  if (absl::SimpleAtoi(headers->getContentLengthValue(), &content_length)
+   && content_length + headers->byteSize() > kMaxObjectBytes)
+  {
+    too_big_to_buffer_ = true;
+    cacheable_ = false;
+  }
+
   std::optional<LifeTimeAndAge> ttl = cacheableFor(*headers);
 
   shareable_ = isShareable(*headers);
@@ -88,7 +98,7 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool){
 
   entry_ = std::make_shared<Entry>();
   entry_->headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers);
-  if(ttl != std::nullopt){
+  if(ttl != std::nullopt && !too_big_to_buffer_){
     cacheable_ = true;
     entry_->born_at = time_source_.monotonicTime() - ttl->age;
     entry_->life_time = ttl->lifetime;
@@ -107,7 +117,14 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool){
 void InFlight::onData(Buffer::Instance& data, bool){
   absl::MutexLock lock(&mutex_);
   std::string data_string = data.toString();
-  entry_->body.append(data_string);
+
+  if(entry_->body.size() + entry_->headers->byteSize() + data_string.size() > kMaxObjectBytes){
+    too_big_to_buffer_ = true;
+    cacheable_ = false;
+    entry_->body = ""; 
+    entry_->body.shrink_to_fit();//deallocate
+  }
+  if((shareable_ || cacheable_) && !too_big_to_buffer_) entry_->body.append(data_string);
 
   postToFollowers(followers_, [data_string](MyCacheFilter& filter){
     filter.onData(data_string, false);

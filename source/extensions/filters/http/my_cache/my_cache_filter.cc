@@ -121,6 +121,7 @@ void MyCacheFilter::onDestroy(){ //called by dispatcher?
 
 void MyCacheFilter::onBypass(){
   if(destroyed_ || done_) return;
+  done_ = true;
   decoder_callbacks_->continueDecoding();
 }
 
