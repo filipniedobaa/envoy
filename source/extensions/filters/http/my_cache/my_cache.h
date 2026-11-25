@@ -20,11 +20,33 @@ namespace MyCacheFilter {
 constexpr uint64_t kMaxTotalBytes  = 256 * 1024 * 1024;  // 256 MiB
 constexpr uint64_t kMaxObjectBytes =  32 * 1024 * 1024;  //  32 MiB
 
+class SharedBody {
+public:
+  void append(std::string chunk);                     // called by InFlight::onData (leader's worker)
+  void markComplete();                                // called by InFlight::onComplete
+  struct Read {
+    std::vector<std::shared_ptr<const std::string>> chunks;  // chunks from `index` on
+    bool complete;
+    Http::ResponseTrailerMapPtr trailers;
+  };
+  void setTrailers(Http::ResponseTrailerMapPtr trailers);
+  Read readFrom(size_t index) const;                  // called by MyCacheFilter::pump (any worker)
+  uint64_t size() const;                              // total bytes, for the size limits
+
+private:
+  mutable absl::Mutex mutex_;   // `mutable`, so const readFrom/size can still lock it
+  std::vector<std::shared_ptr<const std::string>> chunks_ ABSL_GUARDED_BY(mutex_);
+  Http::ResponseTrailerMapPtr trailers_ = nullptr;
+  bool complete_ ABSL_GUARDED_BY(mutex_) = false;
+  uint64_t bytes_ ABSL_GUARDED_BY(mutex_) = 0;
+};
+using SharedBodyPtr = std::shared_ptr<SharedBody>;
+
 struct Entry{
   MonotonicTime born_at;
   std::chrono::seconds life_time;
   Http::ResponseHeaderMapPtr headers;
-  std::string body;
+  SharedBodyPtr body;
 };
 using EntrySharedPtr = std::shared_ptr<const Entry>;
 

@@ -26,7 +26,8 @@ template <class Fn>
 InFlight::InFlight(std::weak_ptr<MyCache> cache, 
                    const std::string& key,
                    TimeSource& time_source):
-                   cache_(cache), key_(key), time_source_(time_source){}
+                   cache_(cache), key_(key),
+                   time_source_(time_source), body_(std::make_shared<SharedBody>()){}
 
 InFlight::~InFlight(){
   destroying_ = true;
@@ -37,19 +38,19 @@ bool InFlight::addFollower(std::weak_ptr<MyCacheFilter> filter,
                            Event::Dispatcher* dispatcher){
   absl::MutexLock lock(&mutex_);
   if((!shareable_ && state_ != State::Waiting)
-  || too_big_to_buffer_) return false;
+  || push_mode_) return false;
 
   followers_.push_back({filter, dispatcher});
   if(response_headers_ == nullptr) return true;
 
-  
+  //catchup
   dispatcher->post([weak = filter, 
-                    data = entry_->body,
+                    body = body_,
                     copied_headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*response_headers_)]
                     () mutable {
     if(auto strong = weak.lock()){
-      strong->onHeaders(std::move(copied_headers), false);
-      strong->onData(data, false);
+      strong->onUpstreamHeaders(std::move(copied_headers), body);
+      strong->onBodyAvailable();
     }
   });
   return true;
@@ -78,7 +79,7 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool){
   if (absl::SimpleAtoi(headers->getContentLengthValue(), &content_length)
    && content_length + headers->byteSize() > kMaxObjectBytes)
   {
-    too_big_to_buffer_ = true;
+    push_mode_ = true;
     cacheable_ = false;
   }
 
@@ -98,7 +99,8 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool){
 
   entry_ = std::make_shared<Entry>();
   entry_->headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers);
-  if(ttl != std::nullopt && !too_big_to_buffer_){
+  entry_->body = body_;
+  if(ttl != std::nullopt && !push_mode_){
     cacheable_ = true;
     entry_->born_at = time_source_.monotonicTime() - ttl->age;
     entry_->life_time = ttl->lifetime;
@@ -107,9 +109,10 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool){
   for(const Follower& follower : followers_){
     follower.dispatcher->post(
       [weak = follower.filter, 
+       body = push_mode_ ? nullptr : body_, 
        copied_headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*headers)]()mutable {
         if(auto strong = weak.lock())
-          strong->onHeaders(std::move(copied_headers), false);
+          strong->onUpstreamHeaders(std::move(copied_headers), body);
        });
   }
 }
@@ -118,17 +121,24 @@ void InFlight::onData(Buffer::Instance& data, bool){
   absl::MutexLock lock(&mutex_);
   std::string data_string = data.toString();
 
-  if(entry_->body.size() + entry_->headers->byteSize() + data_string.size() > kMaxObjectBytes){
-    too_big_to_buffer_ = true;
-    cacheable_ = false;
-    entry_->body = ""; 
-    entry_->body.shrink_to_fit();//deallocate
+  if(cacheable_ && 
+     entry_->body->size() 
+   + entry_->headers->byteSize() 
+   + data_string.size() > kMaxObjectBytes) cacheable_ = false;
+  
+  if(push_mode_){
+    postToFollowers(followers_, [data_string](MyCacheFilter& filter){
+      filter.onUpstreamData(data_string);
+    });
   }
-  if((shareable_ || cacheable_) && !too_big_to_buffer_) entry_->body.append(data_string);
+  else{
+    entry_->body->append(data_string);
+    postToFollowers(followers_, [](MyCacheFilter& filter){
+      filter.onBodyAvailable();
+    });
+  } 
 
-  postToFollowers(followers_, [data_string](MyCacheFilter& filter){
-    filter.onData(data_string, false);
-  });
+  
 }
 
 void InFlight::onTrailers(Http::ResponseTrailerMapPtr&& trailers){
@@ -136,14 +146,21 @@ void InFlight::onTrailers(Http::ResponseTrailerMapPtr&& trailers){
 
   cacheable_ = false;
 
-  for(const Follower& follower : followers_){
-    follower.dispatcher->post(
-      [weak = follower.filter, 
-       copied_trailers = Http::createHeaderMap<Http::ResponseTrailerMapImpl>(*trailers)]()mutable {
-        if(auto strong = weak.lock())
-          strong->onTrailers(std::move(copied_trailers));
-       });
+  if(push_mode_){
+    for(const Follower& follower : followers_){
+      follower.dispatcher->post(
+        [weak = follower.filter, 
+        copied_trailers = Http::createHeaderMap<Http::ResponseTrailerMapImpl>(*trailers)]()mutable {
+          if(auto strong = weak.lock())
+            strong->onTrailers(std::move(copied_trailers));
+        });
+    }
   }
+  else{
+    body_->setTrailers(std::move(trailers));
+  }
+
+  
 }
 
 void InFlight::onComplete(){
@@ -154,6 +171,8 @@ void InFlight::onComplete(){
   }
 
   auto self = shared_from_this();
+
+  body_->markComplete();
 
   //ORDER MATTERS HERE
   if(cacheable_){
@@ -168,9 +187,17 @@ void InFlight::onComplete(){
   absl::MutexLock lock(&mutex_);
   stream_ = nullptr;
   
-  postToFollowers(followers_, [](MyCacheFilter& filter){
-    filter.onComplete();
-  });
+  if(push_mode_){
+    postToFollowers(followers_, [](MyCacheFilter& filter){
+      filter.onComplete();
+    });
+  }
+  else{
+    postToFollowers(followers_, [](MyCacheFilter& filter){
+        filter.onBodyAvailable();
+      });
+  }
+  
 }
 
 void InFlight::onReset(){
@@ -191,7 +218,7 @@ void InFlight::onReset(){
   absl::MutexLock lock(&mutex_);
   if(prev_state == State::Waiting){
     postToFollowers(followers_, [](MyCacheFilter& filter){
-      filter.onFail();
+      filter.onUpstreamFail();
     });
   }
   else{
@@ -217,7 +244,7 @@ void InFlight::fail(){
   
   absl::MutexLock lock(&mutex_);
   postToFollowers(followers_, [](MyCacheFilter& filter){
-    filter.onFail();
+    filter.onUpstreamFail();
   });
   
 }

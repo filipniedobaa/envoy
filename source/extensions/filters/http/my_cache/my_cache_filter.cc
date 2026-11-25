@@ -46,12 +46,11 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
       headers->setCopy(Http::LowerCaseString("age"),
                        std::to_string(age.count()));
 
-      decoder_callbacks_->encodeHeaders(std::move(headers), lookup_result.entry->body.empty(), "HIT");
+      decoder_callbacks_->encodeHeaders(std::move(headers), false, "HIT");
 
-      if (!lookup_result.entry->body.empty()) {
-        Buffer::OwnedImpl body(lookup_result.entry->body);
-        decoder_callbacks_->encodeData(body, true);
-      }
+      body_ = lookup_result.entry->body;
+      pull();
+      
       return Http::FilterHeadersStatus::StopIteration;
     }
 
@@ -77,19 +76,25 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
   return Http::FilterHeadersStatus::StopIteration; //OR PANIC
 }
 
-void MyCacheFilter::onHeaders(Http::ResponseHeaderMapPtr headers, bool end_stream){
+void MyCacheFilter::onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, SharedBodyPtr body){
   if(destroyed_ || done_) return;
-  decoder_callbacks_->encodeHeaders(std::move(headers), end_stream, "my_cache_miss");
+  body_ = body;
+  decoder_callbacks_->encodeHeaders(std::move(headers), false, "my_cache_miss");
 }
 
-void MyCacheFilter::onData(const std::string& data, bool end_stream){
+void MyCacheFilter::onUpstreamData(const std::string& data){
   if(destroyed_ || done_) return;
   Buffer::OwnedImpl buffer(data);
-  decoder_callbacks_->encodeData(buffer, end_stream);
+  decoder_callbacks_->encodeData(buffer, false);
+}
+
+void MyCacheFilter::onBodyAvailable(){
+  pull();
 }
 
 void MyCacheFilter::onTrailers(Http::ResponseTrailerMapPtr trailers){
   if(destroyed_ || done_) return;
+  done_ = true;
   decoder_callbacks_->encodeTrailers(std::move(trailers));
 }
 
@@ -99,7 +104,7 @@ void MyCacheFilter::onComplete(){
   Buffer::OwnedImpl empty_body("");
   decoder_callbacks_->encodeData(empty_body, true);
 }
-void MyCacheFilter::onFail(){
+void MyCacheFilter::onUpstreamFail(){
   if(destroyed_ || done_) return;
   done_ = true;
   decoder_callbacks_->sendLocalReply(Http::Code::ServiceUnavailable,
@@ -123,6 +128,32 @@ void MyCacheFilter::onBypass(){
   if(destroyed_ || done_) return;
   done_ = true;
   decoder_callbacks_->continueDecoding();
+}
+
+void MyCacheFilter::pull(){
+  if(destroyed_ || done_) return;
+  if(body_ == nullptr) return;
+
+  SharedBody::Read read = body_->readFrom(cursor_);
+  for(auto chunk : read.chunks){
+    Buffer::OwnedImpl buffer(*chunk);
+    decoder_callbacks_->encodeData(buffer, false);
+    if(destroyed_ || done_) return;
+    cursor_++;
+  }
+
+  if(read.complete){
+    if(read.trailers != nullptr){
+      decoder_callbacks_->encodeTrailers(std::move(read.trailers));
+      if(destroyed_ || done_) return;
+    }
+    else{
+      Buffer::OwnedImpl empty_body("");
+      decoder_callbacks_->encodeData(empty_body, true);
+      if(destroyed_ || done_) return;
+    }
+    done_ = true;
+  }
 }
 
 

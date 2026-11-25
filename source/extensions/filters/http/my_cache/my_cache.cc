@@ -20,6 +20,39 @@ namespace MyCacheFilter {
 class InFlight;
 class MyCacheFilter;
 
+void SharedBody::append(std::string chunk){
+  absl::MutexLock lock(&mutex_);
+  bytes_ += chunk.size();
+  chunks_.push_back(std::make_shared<const std::string>(std::move(chunk)));
+}
+
+void SharedBody::markComplete(){
+  absl::MutexLock lock(&mutex_);
+  complete_ = true;
+}
+
+SharedBody::Read SharedBody::readFrom(size_t index) const{
+  absl::MutexLock lock(&mutex_);
+  SharedBody::Read read;
+  if(index < chunks_.size())
+    read.chunks.assign(chunks_.begin() + index, chunks_.end());
+  
+  read.complete = complete_;
+  if(complete_ && trailers_ != nullptr) read.trailers = Http::createHeaderMap<Http::ResponseTrailerMapImpl>(*trailers_);
+  return read;
+}
+
+uint64_t SharedBody::size() const{
+  absl::MutexLock lock(&mutex_);
+  return bytes_;
+}
+
+void SharedBody::setTrailers(Http::ResponseTrailerMapPtr trailers){
+  absl::MutexLock lock(&mutex_);
+  trailers_ = Http::createHeaderMap<Http::ResponseTrailerMapImpl>(*trailers);
+}
+
+
 
 LookupResult MyCache::lookup_or_follow(const std::string& key, 
                              MonotonicTime now,
@@ -71,7 +104,7 @@ LookupResult MyCache::lookup_or_follow(const std::string& key,
 }
 
 void MyCache::insert(const std::string& key, EntrySharedPtr entry){
-  uint64_t bytes = entry->body.size() + entry->headers->byteSize() + key.size();
+  uint64_t bytes = entry->body->size() + entry->headers->byteSize() + key.size();
   if(bytes > kMaxObjectBytes) return;
 
   absl::MutexLock lock(&cache_mutex_);

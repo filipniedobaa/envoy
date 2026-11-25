@@ -25,16 +25,20 @@ public:
 
   void onDestroy() override;
   
-  void onHeaders(Http::ResponseHeaderMapPtr headers, bool end_stream);
+  void onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, SharedBodyPtr body);
   void onComplete();
-  void onData(const std::string& data, bool end_stream);
+  void onUpstreamData(const std::string& data);
+  void onBodyAvailable();
   void onTrailers(Http::ResponseTrailerMapPtr trailers);
-  void onFail();
+  void onUpstreamFail();
   void onReset();
   void onBypass();
+  void pull();
 
 private:
   MyCacheSharedPtr cache_;
+  SharedBodyPtr body_;
+  size_t cursor_ = 0;
   Upstream::ClusterManager& cluster_manager_;
   bool destroyed_ = false;
   bool done_ = false;

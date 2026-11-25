@@ -51,11 +51,12 @@ private:
     std::string key_;
     TimeSource& time_source_;
     std::shared_ptr<Entry> entry_ = nullptr;
+    SharedBodyPtr body_;
 
     bool cacheable_ = false;
     bool shareable_ = false;
-    bool too_big_to_buffer_ = false;
     bool destroying_ = false;
+    bool push_mode_ = false; // false implies pull mode
     State state_ = State::Waiting;
     
 
