@@ -1,10 +1,10 @@
 #include "source/extensions/filters/http/my_cache/my_cache_filter.h"
-#include "source/extensions/filters/http/my_cache/cacheability.h"
-#include "source/extensions/filters/http/my_cache/in_flight.h"
 
 #include "source/common/buffer/buffer_impl.h"
 #include "source/common/http/header_map_impl.h"
 #include "source/common/http/headers.h"
+#include "source/extensions/filters/http/my_cache/cacheability.h"
+#include "source/extensions/filters/http/my_cache/in_flight.h"
 
 #include "absl/strings/ascii.h"
 #include "absl/strings/match.h"
@@ -17,133 +17,127 @@ namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
-  
+
 constexpr uint64_t kMaxBytesPushWhileHighWatermark = 32 * 1024 * 1024; //  32 MiB
-constexpr size_t kZeroCopyThreshold = 16 * 1024;   // below this, copying beats a fragment
+constexpr size_t kZeroCopyThreshold = 16 * 1024; // below this, copying beats a fragment
 
-
-
-Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers,
-                                                       bool) {
-  if(headers.getMethodValue() != "GET") 
+Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers, bool) {
+  if (headers.getMethodValue() != "GET")
     return Http::FilterHeadersStatus::Continue;
 
-  if(!requestMayCache(headers)) return Http::FilterHeadersStatus::Continue;
+  if (!requestMayCache(headers))
+    return Http::FilterHeadersStatus::Continue;
 
   std::string key = absl::StrCat(headers.getHostValue(), headers.getPathValue());
 
   LookupResult lookup_result =
-      cache_->lookup_or_follow(key, 
-                               decoder_callbacks_->dispatcher().timeSource().monotonicTime(),
-                               weak_from_this(),
-                               &decoder_callbacks_->dispatcher());
-  if(lookup_result.kind != LookupResult::Kind::NonShareable){
+      cache_->lookup_or_follow(key, decoder_callbacks_->dispatcher().timeSource().monotonicTime(),
+                               weak_from_this(), &decoder_callbacks_->dispatcher());
+  if (lookup_result.kind != LookupResult::Kind::NonShareable) {
     decoder_callbacks_->addDownstreamWatermarkCallbacks(*this);
     watermark_registered_ = true;
   }
-  
-  switch (lookup_result.kind)
-  {
-    case LookupResult::Kind::Hit:
-    {
-      auto headers = Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*lookup_result.entry->headers);
-      headers->addCopy(Http::LowerCaseString("my-cache"), "HIT");
 
-      std::chrono::seconds age = std::chrono::duration_cast<std::chrono::seconds>(
-        decoder_callbacks_->dispatcher().timeSource().monotonicTime()
-        - lookup_result.entry->born_at);
+  switch (lookup_result.kind) {
+  case LookupResult::Kind::Hit: {
+    auto headers =
+        Http::createHeaderMap<Http::ResponseHeaderMapImpl>(*lookup_result.entry->headers);
+    headers->addCopy(Http::LowerCaseString("my-cache"), "HIT");
 
-      headers->setCopy(Http::LowerCaseString("age"),
-                       std::to_string(age.count()));
+    std::chrono::seconds age = std::chrono::duration_cast<std::chrono::seconds>(
+        decoder_callbacks_->dispatcher().timeSource().monotonicTime() -
+        lookup_result.entry->born_at);
 
-      decoder_callbacks_->encodeHeaders(std::move(headers), false, "HIT");
+    headers->setCopy(Http::LowerCaseString("age"), std::to_string(age.count()));
 
-      body_ = lookup_result.entry->body;
-      pull();
-      
-      return Http::FilterHeadersStatus::StopIteration;
-    }
+    decoder_callbacks_->encodeHeaders(std::move(headers), false, "HIT");
 
-    case LookupResult::Kind::Leader:
-    {
-      Upstream::ThreadLocalCluster* cluster = cluster_manager_.getThreadLocalCluster("origin");
-      if(cluster == nullptr
-      || !lookup_result.in_flight->start(*cluster, Http::createHeaderMap<Http::RequestHeaderMapImpl>(headers))){
-        
-        lookup_result.in_flight->fail();
-      }
-      return Http::FilterHeadersStatus::StopIteration;
-    }
-    case LookupResult::Kind::Follower:
-    {
-      return Http::FilterHeadersStatus::StopIteration;
-    }
-    case LookupResult::Kind::NonShareable:
-    {
-      return Http::FilterHeadersStatus::Continue;
-    }
+    body_ = lookup_result.entry->body;
+    pull();
+
+    return Http::FilterHeadersStatus::StopIteration;
   }
-  return Http::FilterHeadersStatus::StopIteration; //OR PANIC
+
+  case LookupResult::Kind::Leader: {
+    Upstream::ThreadLocalCluster* cluster = cluster_manager_.getThreadLocalCluster("origin");
+    if (cluster == nullptr ||
+        !lookup_result.in_flight->start(
+            *cluster, Http::createHeaderMap<Http::RequestHeaderMapImpl>(headers))) {
+
+      lookup_result.in_flight->fail();
+    }
+    return Http::FilterHeadersStatus::StopIteration;
+  }
+  case LookupResult::Kind::Follower: {
+    return Http::FilterHeadersStatus::StopIteration;
+  }
+  case LookupResult::Kind::NonShareable: {
+    return Http::FilterHeadersStatus::Continue;
+  }
+  }
+  PANIC("unreachable");
 }
 
-void MyCacheFilter::onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, SharedBodyPtr body){
-  if(destroyed_ || done_) return;
+void MyCacheFilter::onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, SharedBodyPtr body) {
+  if (destroyed_ || done_)
+    return;
   body_ = body;
   decoder_callbacks_->encodeHeaders(std::move(headers), false, "my_cache_miss");
 }
 
-void MyCacheFilter::onUpstreamData(std::shared_ptr<const std::string> chunk){
-  //only for push mode
-  if(destroyed_ || done_) return;
+void MyCacheFilter::onUpstreamData(std::shared_ptr<const std::string> chunk) {
+  // only for push mode
+  if (destroyed_ || done_)
+    return;
   auto* fragment = new Buffer::BufferFragmentImpl(
-    chunk->data(), chunk->size(),
-    [chunk](const void*, size_t, const Buffer::BufferFragmentImpl* self){
-      delete self;
-    });
+      chunk->data(), chunk->size(),
+      [chunk](const void*, size_t, const Buffer::BufferFragmentImpl* self) { delete self; });
 
   Buffer::OwnedImpl buffer;
   buffer.addBufferFragment(*fragment);
-  if(high_watermark_counter_ > 0) bytes_pushed_while_high_watermark += chunk->size();
-  else 
+  if (high_watermark_counter_ > 0) {
+    bytes_pushed_while_high_watermark += chunk->size();
+  }
+
   decoder_callbacks_->encodeData(buffer, false);
-  if(bytes_pushed_while_high_watermark > kMaxBytesPushWhileHighWatermark)
-    onReset();
+  if (bytes_pushed_while_high_watermark > kMaxBytesPushWhileHighWatermark)
+    abortStream();
 }
 
-void MyCacheFilter::onBodyAvailable(){
-  pull();
-}
+void MyCacheFilter::onBodyAvailable() { pull(); }
 
-void MyCacheFilter::onTrailers(Http::ResponseTrailerMapPtr trailers){
-  if(destroyed_ || done_) return;
+void MyCacheFilter::onTrailers(Http::ResponseTrailerMapPtr trailers) {
+  if (destroyed_ || done_)
+    return;
   done_ = true;
   decoder_callbacks_->encodeTrailers(std::move(trailers));
 }
 
-void MyCacheFilter::onComplete(){
-  if(destroyed_ || done_) return;
+void MyCacheFilter::onUpstreamComplete() {
+  if (destroyed_ || done_)
+    return;
   done_ = true;
   Buffer::OwnedImpl empty_body("");
   decoder_callbacks_->encodeData(empty_body, true);
 }
-void MyCacheFilter::onUpstreamFail(){
-  if(destroyed_ || done_) return;
+void MyCacheFilter::onUpstreamFail() {
+  if (destroyed_ || done_)
+    return;
   done_ = true;
-  decoder_callbacks_->sendLocalReply(Http::Code::ServiceUnavailable,
-                                       "upstream fetch failed",
-                                       nullptr, std::nullopt,
-                                       "upstream_fetch_failed");
+  decoder_callbacks_->sendLocalReply(Http::Code::ServiceUnavailable, "upstream fetch failed",
+                                     nullptr, std::nullopt, "upstream_fetch_failed");
 }
-void MyCacheFilter::onReset(){
-  if(destroyed_ || done_) return;
+void MyCacheFilter::abortStream() {
+  if (destroyed_ || done_)
+    return;
   done_ = true;
   decoder_callbacks_->resetStream();
 }
 
-void MyCacheFilter::onDestroy(){ //called by dispatcher?
+void MyCacheFilter::onDestroy() { // called by dispatcher
   destroyed_ = true;
-  //because envoy call onDestroy() first and deletes the object later,
-  //so callbacks would be invalid
+  // because envoy call onDestroy() first and deletes the object later,
+  // so callbacks would be invalid
 
   if (watermark_registered_) {
     decoder_callbacks_->removeDownstreamWatermarkCallbacks(*this);
@@ -151,77 +145,76 @@ void MyCacheFilter::onDestroy(){ //called by dispatcher?
   }
 }
 
-void MyCacheFilter::onBypass(){
-  if(destroyed_ || done_) return;
+void MyCacheFilter::onBypass() {
+  if (destroyed_ || done_)
+    return;
   done_ = true;
 
   if (watermark_registered_) {
     decoder_callbacks_->removeDownstreamWatermarkCallbacks(*this);
     watermark_registered_ = false;
   }
-  
+
   decoder_callbacks_->continueDecoding();
 }
 
-void MyCacheFilter::pull(){
-  if(destroyed_ || done_ || high_watermark_counter_ > 0) return;
-  if(body_ == nullptr) return;
+void MyCacheFilter::pull() {
+  if (destroyed_ || done_ || high_watermark_counter_ > 0)
+    return;
+  if (body_ == nullptr)
+    return;
 
   SharedBody::Read read = body_->readFrom(cursor_);
-  for(size_t i = 0; i < read.chunks.size(); i++){
+  for (size_t i = 0; i < read.chunks.size(); i++) {
     const auto& chunk = read.chunks[i];
 
     Buffer::OwnedImpl buffer;
     if (chunk->size() < kZeroCopyThreshold) {
-      buffer.add(chunk->data(), chunk->size());         // small: copy
-    } 
-    else { //big: pass a fragment
+      buffer.add(chunk->data(), chunk->size()); // small: copy
+    } else {                                    // big: pass a fragment
       auto* fragment = new Buffer::BufferFragmentImpl(
-      chunk->data(), chunk->size(),
-      [chunk](const void*, size_t, const Buffer::BufferFragmentImpl* self){
-        delete self; //releaser
-      });
+          chunk->data(), chunk->size(),
+          [chunk](const void*, size_t, const Buffer::BufferFragmentImpl* self) {
+            delete self; // releaser
+          });
 
       buffer.addBufferFragment(*fragment);
     }
-    bool end_stream = (i + 1 == read.chunks.size()) 
-                    && read.complete 
-                    && read.trailers == nullptr;
-    
+    bool end_stream = (i + 1 == read.chunks.size()) && read.complete && read.trailers == nullptr;
+
     decoder_callbacks_->encodeData(buffer, end_stream);
     done_ = end_stream;
     cursor_++;
-    if(destroyed_ || done_ || high_watermark_counter_ > 0) return;
+    if (destroyed_ || done_ || high_watermark_counter_ > 0)
+      return;
   }
 
-  if(read.complete){
+  if (read.complete) {
     done_ = true;
-    if(read.trailers != nullptr){
+    if (read.trailers != nullptr) {
       decoder_callbacks_->encodeTrailers(std::move(read.trailers));
-    }
-    else{
+    } else {
       Buffer::OwnedImpl emptyBody("");
       decoder_callbacks_->encodeData(emptyBody, true);
     }
   }
 }
 
-void MyCacheFilter::onAboveWriteBufferHighWatermark() {
-  high_watermark_counter_++;
-}
+void MyCacheFilter::onAboveWriteBufferHighWatermark() { high_watermark_counter_++; }
 
 void MyCacheFilter::onBelowWriteBufferLowWatermark() {
-  bytes_pushed_while_high_watermark = 0;
-  if (high_watermark_counter_ > 0) high_watermark_counter_--;
+  if (high_watermark_counter_ > 0)
+    high_watermark_counter_--;
   if (high_watermark_counter_ == 0) {
-    
-    //cant call pull() directly because of stack re-entrancy????
+
+    bytes_pushed_while_high_watermark = 0;
+    // cant call pull() directly because of stack re-entrancy????
     decoder_callbacks_->dispatcher().post([weak = weak_from_this()]() {
-      if (auto self = weak.lock()) self->pull();
+      if (auto self = weak.lock())
+        self->pull();
     });
   }
 }
-
 
 } // namespace MyCacheFilter
 } // namespace HttpFilters

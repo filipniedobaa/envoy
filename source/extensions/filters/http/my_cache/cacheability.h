@@ -1,16 +1,15 @@
 #pragma once
-#include <optional>
 #include <chrono>
+#include <optional>
 
 #include "envoy/http/header_map.h"
-
 
 namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
 
-struct LifeTimeAndAge{
+struct LifeTimeAndAge {
   std::chrono::seconds lifetime;
   std::chrono::seconds age;
 };
