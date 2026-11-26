@@ -43,7 +43,7 @@ public:
   
   void onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, SharedBodyPtr body);
   void onComplete();
-  void onUpstreamData(const std::string& data);
+  void onUpstreamData(std::shared_ptr<const std::string> chunk);
   void onBodyAvailable();
   void onTrailers(Http::ResponseTrailerMapPtr trailers);
   void onUpstreamFail();
@@ -62,6 +62,7 @@ private:
   bool destroyed_ = false;
   bool done_ = false;
 
+  uint64_t bytes_pushed_while_high_watermark = 0;
   uint32_t high_watermark_counter_ = 0;
   bool watermark_registered_ = false;
 };

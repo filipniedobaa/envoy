@@ -17,6 +17,8 @@ namespace Envoy {
 namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
+  
+constexpr uint64_t kMaxBytesPushWhileHighWatermark = 32 * 1024 * 1024; //  32 MiB
 
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers,
                                                        bool) {
@@ -87,19 +89,22 @@ void MyCacheFilter::onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, Shared
   decoder_callbacks_->encodeHeaders(std::move(headers), false, "my_cache_miss");
 }
 
-void MyCacheFilter::onUpstreamData(const std::string& chunk){
+void MyCacheFilter::onUpstreamData(std::shared_ptr<const std::string> chunk){
   //only for push mode
-  std::shared_ptr<const std::string> tmp = std::make_shared<const std::string>(chunk);
   if(destroyed_ || done_) return;
   auto* fragment = new Buffer::BufferFragmentImpl(
-    tmp->data(), chunk.size(),
-    [tmp](const void*, size_t, const Buffer::BufferFragmentImpl* self){
+    chunk->data(), chunk->size(),
+    [chunk](const void*, size_t, const Buffer::BufferFragmentImpl* self){
       delete self;
     });
 
   Buffer::OwnedImpl buffer;
   buffer.addBufferFragment(*fragment);
+  if(high_watermark_counter_ > 0) bytes_pushed_while_high_watermark += chunk->size();
+  else 
   decoder_callbacks_->encodeData(buffer, false);
+  if(bytes_pushed_while_high_watermark > kMaxBytesPushWhileHighWatermark)
+    onReset();
 }
 
 void MyCacheFilter::onBodyAvailable(){
@@ -192,6 +197,7 @@ void MyCacheFilter::onAboveWriteBufferHighWatermark() {
 }
 
 void MyCacheFilter::onBelowWriteBufferLowWatermark() {
+  bytes_pushed_while_high_watermark = 0;
   if (high_watermark_counter_ > 0) high_watermark_counter_--;
   if (high_watermark_counter_ == 0) {
     

@@ -127,8 +127,9 @@ void InFlight::onData(Buffer::Instance& data, bool){
    + data_string.size() > kMaxObjectBytes) cacheable_ = false;
   
   if(push_mode_){
-    postToFollowers(followers_, [data_string](MyCacheFilter& filter){
-      filter.onUpstreamData(data_string);
+    std::shared_ptr<const std::string> tmp = std::make_shared<const std::string>(data_string);
+    postToFollowers(followers_, [tmp](MyCacheFilter& filter){
+      filter.onUpstreamData(tmp);
     });
   }
   else{
