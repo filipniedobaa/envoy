@@ -34,7 +34,7 @@ The test origin understands these query parameters (any path works):
 Output: PASS / FAIL / SKIP per test, plus a few informational lines at the end
 (e.g. how connections were spread over Envoy's worker threads).
 
-This test harness was written with AI assistance.
+This test harness was written with AI assistance (see "How I worked" in the README).
 """
 
 import argparse
@@ -446,7 +446,8 @@ def basic_miss_then_hit():
 
 @test
 def hit_large_body_integrity():
-    path, exp = url("large", size=8 * 1024 * 1024, chunks=32)
+    size = min(8 * MIB, LIMITS["object"] - MIB)   # largest "large" object that is still cacheable
+    path, exp = url("large", size=size, chunks=32)
     check_full([fetch(path)], exp, "miss")
     r = fetch(path)
     check(r.hit, "second request is not a HIT")
@@ -828,7 +829,7 @@ def lru_many_small_objects_still_work():
 def pull_mode_slow_reader_gets_exact_body():
     # Normal-sized object, client much slower than the origin: it is paused by
     # the watermark and resumed many times - every byte must arrive, in order.
-    size = 8 * MIB
+    size = min(8 * MIB, LIMITS["object"] - MIB)   # must stay in pull mode (under the object limit)
     path, exp = url("pull_slow", size=size, chunks=16)
     r = fetch(path, read_rate=4 * MIB, rcvbuf=64 * 1024, timeout=60)
     check_full([r], exp, "slow reader")

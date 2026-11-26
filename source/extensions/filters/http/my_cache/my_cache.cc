@@ -18,9 +18,6 @@ namespace Extensions {
 namespace HttpFilters {
 namespace MyCacheFilter {
 
-class InFlight;
-class MyCacheFilter;
-
 void SharedBody::append(std::string chunk) {
   absl::MutexLock lock(&mutex_);
   bytes_ += chunk.size();
@@ -54,9 +51,15 @@ void SharedBody::setTrailers(Http::ResponseTrailerMapPtr trailers) {
   trailers_ = std::move(trailers);
 }
 
-LookupResult MyCache::lookup_or_follow(const std::string& key, MonotonicTime now,
-                                       std::weak_ptr<MyCacheFilter> filter,
-                                       Event::Dispatcher* dispatcher) {
+// The whole decision happens under the locks, so among requests that go through
+// the cache there is at most one InFlight per URL: a request either finds the
+// stored entry, joins the fetch in progress, or creates it.
+// Requests that bypass the cache (see requestMayCache) and clients a fetch
+// rejects or releases (non-shareable response, push mode) go to the origin on
+// their own, through the router.
+LookupResult MyCache::lookupOrFollow(const std::string& key, MonotonicTime now,
+                                     std::weak_ptr<MyCacheFilter> filter,
+                                     Event::Dispatcher* dispatcher) {
   absl::MutexLock lock(&cache_mutex_);
 
   LookupResult res;
@@ -66,7 +69,7 @@ LookupResult MyCache::lookup_or_follow(const std::string& key, MonotonicTime now
     Slot& slot = it->second;
     if (slot.entry->born_at + slot.entry->life_time <= now) {
       // IS CACHED BUT EXPIRED
-      delete_from_cache(it);
+      deleteFromCache(it);
     } else {
       // IS CACHED AND VALID
       lru_.splice(lru_.begin(), lru_, slot.lru_it);
@@ -83,7 +86,8 @@ LookupResult MyCache::lookup_or_follow(const std::string& key, MonotonicTime now
     // WE ARE THE LEADER
 
     res.kind = LookupResult::Kind::Leader;
-    res.in_flight = std::make_shared<InFlight>(weak_from_this(), key, dispatcher->timeSource());
+    res.in_flight = std::make_shared<InFlight>(weak_from_this(), key, dispatcher->timeSource(),
+                                               max_object_bytes_);
     res.in_flight->addFollower(filter, dispatcher);
 
     in_flight_map_.emplace(key, res.in_flight);
@@ -102,13 +106,13 @@ LookupResult MyCache::lookup_or_follow(const std::string& key, MonotonicTime now
 
 void MyCache::insert(const std::string& key, EntrySharedPtr entry) {
   uint64_t bytes = entry->body->size() + entry->headers->byteSize() + key.size();
-  if (bytes > kMaxObjectBytes)
+  if (bytes > max_object_bytes_)
     return;
 
   absl::MutexLock lock(&cache_mutex_);
   auto it = map_.find(key);
   if (it != map_.end())
-    delete_from_cache(it);
+    deleteFromCache(it);
 
   Slot slot;
   slot.bytes = bytes;
@@ -117,30 +121,30 @@ void MyCache::insert(const std::string& key, EntrySharedPtr entry) {
   slot.lru_it = lru_.begin();
   map_.insert_or_assign(key, std::move(slot));
   total_bytes_ += bytes;
-  remove_least_recently_used();
+  removeLeastRecentlyUsed();
 }
 
-void MyCache::delete_in_flight(const std::string& key) {
+void MyCache::deleteInFlight(const std::string& key) {
   absl::MutexLock lock(&in_flight_mutex_);
   in_flight_map_.erase(key);
 }
 
-void MyCache::remove_least_recently_used() {
+void MyCache::removeLeastRecentlyUsed() {
   cache_mutex_.AssertHeld();
-  while (!lru_.empty() && total_bytes_ > kMaxTotalBytes) {
-    delete_from_cache(lru_.back());
+  while (!lru_.empty() && total_bytes_ > max_total_bytes_) {
+    deleteFromCache(lru_.back());
   }
 }
 
-void MyCache::delete_from_cache(const std::string& key) {
+void MyCache::deleteFromCache(const std::string& key) {
   // private so assume locked cache_mutex_
   cache_mutex_.AssertHeld();
   auto it = map_.find(key);
   if (it == map_.end())
     return;
-  delete_from_cache(it);
+  deleteFromCache(it);
 }
-void MyCache::delete_from_cache(absl::flat_hash_map<std::string, Slot>::iterator it) {
+void MyCache::deleteFromCache(absl::flat_hash_map<std::string, Slot>::iterator it) {
   // private so assume locked cache_mutex_
   cache_mutex_.AssertHeld();
   Slot& slot = it->second;

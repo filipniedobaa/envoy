@@ -5,7 +5,6 @@ package envoy.extensions.filters.http.my_cache.v3;
 import "google/protobuf/wrappers.proto";
 
 import "udpa/annotations/status.proto";
-import "udpa/annotations/versioning.proto";
 import "validate/validate.proto";
 
 option java_package = "io.envoyproxy.envoy.extensions.filters.http.my_cache.v3";
@@ -14,29 +13,22 @@ option java_multiple_files = true;
 option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/filters/http/my_cache/v3;my_cachev3";
 option (udpa.annotations.file_status).package_version_status = ACTIVE;
 
-// [#protodoc-title: Buffer]
-// Buffer :ref:`configuration overview <config_http_filters_buffer>`.
-// [#extension: envoy.filters.http.buffer]
+// [#protodoc-title: My cache]
+// In-memory HTTP cache with request coalescing.
+// [#extension: envoy.filters.http.my_cache]
 
 message MyCache {
+  // Total memory budget for stored responses, in bytes. Least recently used
+  // entries are evicted when it is exceeded. Defaults to 256 MiB.
+  google.protobuf.UInt64Value max_total_bytes = 1 [(validate.rules).uint64 = {gt: 0}];
 
-  reserved 2;
-
-  // The maximum request size that the filter will buffer before the connection
-  // manager will stop buffering and return a 413 response.
-  google.protobuf.UInt32Value max_request_bytes = 1
-      [(validate.rules).uint32 = {gt: 0}, (validate.rules).message = {required: true}];
+  // Largest single response that is stored, in bytes. Larger responses are still
+  // coalesced and streamed, but not stored. Also bounds how far a slow client may
+  // fall behind in push mode. Defaults to 32 MiB.
+  google.protobuf.UInt64Value max_object_bytes = 2 [(validate.rules).uint64 = {gt: 0}];
 }
 
+// Per-route configuration is not supported yet. The message exists because the
+// filter factory base class requires a per-route type.
 message MyCachePerRoute {
-
-  oneof override {
-    option (validate.required) = true;
-
-    // Disable the buffer filter for this particular vhost or route.
-    bool disabled = 1 [(validate.rules).bool = {const: true}];
-
-    // Override the global configuration of the filter with this new config.
-    MyCache buffer = 2 [(validate.rules).message = {required: true}];
-  }
 }

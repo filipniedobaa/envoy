@@ -1,3 +1,27 @@
+// One origin fetch, shared by all clients requesting the same URL ("followers").
+// The fetch is independent of any single client: the request that created it is
+// just the first follower, and the fetch continues if clients disconnect.
+//
+// Threads: all AsyncClient callbacks (onHeaders/onData/onTrailers/onComplete/
+// onReset) run on the leader's worker; addFollower() runs on the joining
+// client's worker. Clients are never touched directly - everything is posted to
+// each follower's own dispatcher. Posts happen while holding mutex_, so a late
+// joiner's catch-up can never be reordered with live notifications.
+//
+// Lifetime: owned by MyCache::in_flight_map_ while the fetch runs. Terminal
+// callbacks pin the object (shared_from_this), because removing the map entry
+// may drop its last owner mid-function. Exactly one terminal event per fetch:
+// state_ == Done guards onComplete / onReset / fail.
+//
+// Modes:
+//   pull (default) - the body goes into a SharedBody; clients read it at their
+//                    own pace.
+//   push           - Content-Length > max_object_bytes: nothing is stored; chunks
+//                    are pushed to clients that joined before the headers, and
+//                    later joiners are rejected (no stored beginning to catch up from).
+// Non-shareable responses (private, Set-Cookie): only the first follower receives
+// it; the others are released to the router (continueDecoding) and fetch alone.
+
 #pragma once
 #include "envoy/event/dispatcher.h"
 #include "envoy/http/async_client.h"
@@ -27,7 +51,8 @@ class InFlight : public Http::AsyncClient::StreamCallbacks,
   template <class Fn> void postToFollowers(const std::vector<Follower>& followers, Fn fn);
 
 public:
-  InFlight(std::weak_ptr<MyCache> cache, const std::string& key, TimeSource& time_source);
+  InFlight(std::weak_ptr<MyCache> cache, const std::string& key, TimeSource& time_source,
+           const uint64_t max_object_bytes);
 
   ~InFlight() override;
 
@@ -46,8 +71,9 @@ private:
   std::weak_ptr<MyCache> cache_;
   std::string key_;
   TimeSource& time_source_;
-  std::shared_ptr<Entry> entry_ = nullptr;
   SharedBodyPtr body_;
+  const uint64_t max_object_bytes_;
+  std::shared_ptr<Entry> entry_ = nullptr;
 
   bool cacheable_ = false;
   bool shareable_ = false;

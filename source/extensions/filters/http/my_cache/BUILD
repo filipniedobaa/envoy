@@ -47,6 +47,7 @@ envoy_cc_extension(
     srcs = ["config.cc"],
     hdrs = ["config.h"],
     deps = [
+        "//source/common/protobuf:utility_lib",
         ":my_cache_lib",
         "//envoy/registry",
         "//source/extensions/filters/http/common:factory_base_lib",

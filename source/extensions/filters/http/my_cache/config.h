@@ -24,12 +24,6 @@ private:
       const envoy::extensions::filters::http::my_cache::v3::MyCache& proto_config,
       Server::Configuration::ServerFactoryContext& context,
       Server::Configuration::ExtraFactoryContext& extra_context) override;
-
-  /*absl::StatusOr<Router::RouteSpecificFilterConfigConstSharedPtr>
-  createRouteSpecificFilterConfigTyped(
-      const envoy::extensions::filters::http::my_cache::v3::MyCachePerRoute&,
-      Server::Configuration::ServerFactoryContext&, ProtobufMessage::ValidationVisitor&) override;
-    */
 };
 
 DECLARE_FACTORY(MyCacheFilterFactory);

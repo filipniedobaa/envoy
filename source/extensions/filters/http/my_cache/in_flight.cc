@@ -24,8 +24,10 @@ template <class Fn> void InFlight::postToFollowers(const std::vector<Follower>& 
 }
 //------------------------------
 
-InFlight::InFlight(std::weak_ptr<MyCache> cache, const std::string& key, TimeSource& time_source)
-    : cache_(cache), key_(key), time_source_(time_source), body_(std::make_shared<SharedBody>()) {}
+InFlight::InFlight(std::weak_ptr<MyCache> cache, const std::string& key, TimeSource& time_source,
+                   const uint64_t max_object_bytes)
+    : cache_(cache), key_(key), time_source_(time_source), body_(std::make_shared<SharedBody>()),
+      max_object_bytes_(max_object_bytes) {}
 
 InFlight::~InFlight() {
   destroying_ = true;
@@ -75,7 +77,7 @@ void InFlight::onHeaders(Http::ResponseHeaderMapPtr&& headers, bool) {
 
   uint64_t content_length;
   if (absl::SimpleAtoi(headers->getContentLengthValue(), &content_length) &&
-      content_length + headers->byteSize() > kMaxObjectBytes) {
+      content_length + headers->byteSize() > max_object_bytes_) {
     push_mode_ = true;
     cacheable_ = false;
   }
@@ -119,7 +121,7 @@ void InFlight::onData(Buffer::Instance& data, bool) {
   std::string data_string = data.toString();
 
   if (cacheable_ &&
-      entry_->body->size() + entry_->headers->byteSize() + data_string.size() > kMaxObjectBytes)
+      entry_->body->size() + entry_->headers->byteSize() + data_string.size() > max_object_bytes_)
     cacheable_ = false;
 
   if (push_mode_) {
@@ -152,6 +154,9 @@ void InFlight::onTrailers(Http::ResponseTrailerMapPtr&& trailers) {
   }
 }
 
+// Order matters: insert into the cache before removing the in-flight record,
+// so a request arriving in between finds one or the other and never starts a
+// second fetch.
 void InFlight::onComplete() {
   {
     absl::MutexLock lock(&mutex_);
@@ -164,14 +169,13 @@ void InFlight::onComplete() {
 
   body_->markComplete();
 
-  // ORDER MATTERS HERE
   if (cacheable_) {
     if (auto cache_shared_ptr = cache_.lock())
       cache_shared_ptr->insert(key_, entry_);
   }
 
   if (auto cache_shared_ptr = cache_.lock())
-    cache_shared_ptr->delete_in_flight(key_);
+    cache_shared_ptr->deleteInFlight(key_);
 
   absl::MutexLock lock(&mutex_);
   stream_ = nullptr;
@@ -198,7 +202,7 @@ void InFlight::onReset() {
   auto self = shared_from_this();
 
   if (auto cache_shared_ptr = cache_.lock())
-    cache_shared_ptr->delete_in_flight(key_);
+    cache_shared_ptr->deleteInFlight(key_);
 
   absl::MutexLock lock(&mutex_);
   if (prev_state == State::Waiting) {
@@ -221,7 +225,7 @@ void InFlight::fail() {
   auto self = shared_from_this();
 
   if (auto cache_shared_ptr = cache_.lock())
-    cache_shared_ptr->delete_in_flight(key_);
+    cache_shared_ptr->deleteInFlight(key_);
 
   absl::MutexLock lock(&mutex_);
   postToFollowers(followers_, [](MyCacheFilter& filter) { filter.onUpstreamFail(); });
