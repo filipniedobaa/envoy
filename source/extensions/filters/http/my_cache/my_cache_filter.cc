@@ -32,6 +32,11 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
                                decoder_callbacks_->dispatcher().timeSource().monotonicTime(),
                                weak_from_this(),
                                &decoder_callbacks_->dispatcher());
+  if(lookup_result.kind != LookupResult::Kind::NonShareable){
+    decoder_callbacks_->addDownstreamWatermarkCallbacks(*this);
+    watermark_registered_ = true;
+  }
+  
   switch (lookup_result.kind)
   {
     case LookupResult::Kind::Hit:
@@ -82,9 +87,18 @@ void MyCacheFilter::onUpstreamHeaders(Http::ResponseHeaderMapPtr headers, Shared
   decoder_callbacks_->encodeHeaders(std::move(headers), false, "my_cache_miss");
 }
 
-void MyCacheFilter::onUpstreamData(const std::string& data){
+void MyCacheFilter::onUpstreamData(const std::string& chunk){
+  //only for push mode
+  std::shared_ptr<const std::string> tmp = std::make_shared<const std::string>(chunk);
   if(destroyed_ || done_) return;
-  Buffer::OwnedImpl buffer(data);
+  auto* fragment = new Buffer::BufferFragmentImpl(
+    tmp->data(), chunk.size(),
+    [tmp](const void*, size_t, const Buffer::BufferFragmentImpl* self){
+      delete self;
+    });
+
+  Buffer::OwnedImpl buffer;
+  buffer.addBufferFragment(*fragment);
   decoder_callbacks_->encodeData(buffer, false);
 }
 
@@ -122,37 +136,69 @@ void MyCacheFilter::onDestroy(){ //called by dispatcher?
   destroyed_ = true;
   //because envoy call onDestroy() first and deletes the object later,
   //so callbacks would be invalid
+
+  if (watermark_registered_) {
+    decoder_callbacks_->removeDownstreamWatermarkCallbacks(*this);
+    watermark_registered_ = false;
+  }
 }
 
 void MyCacheFilter::onBypass(){
   if(destroyed_ || done_) return;
   done_ = true;
+
+  if (watermark_registered_) {
+    decoder_callbacks_->removeDownstreamWatermarkCallbacks(*this);
+    watermark_registered_ = false;
+  }
+  
   decoder_callbacks_->continueDecoding();
 }
 
 void MyCacheFilter::pull(){
-  if(destroyed_ || done_) return;
+  if(destroyed_ || done_ || high_watermark_counter_ > 0) return;
   if(body_ == nullptr) return;
 
   SharedBody::Read read = body_->readFrom(cursor_);
   for(auto chunk : read.chunks){
-    Buffer::OwnedImpl buffer(*chunk);
+
+    auto* fragment = new Buffer::BufferFragmentImpl(
+      chunk->data(), chunk->size(),
+      [chunk](const void*, size_t, const Buffer::BufferFragmentImpl* self){
+        delete self;
+      });
+
+    Buffer::OwnedImpl buffer;
+    buffer.addBufferFragment(*fragment);
     decoder_callbacks_->encodeData(buffer, false);
-    if(destroyed_ || done_) return;
     cursor_++;
+    if(destroyed_ || done_ || high_watermark_counter_ > 0) return;
   }
 
   if(read.complete){
+    done_ = true;
     if(read.trailers != nullptr){
       decoder_callbacks_->encodeTrailers(std::move(read.trailers));
-      if(destroyed_ || done_) return;
     }
     else{
       Buffer::OwnedImpl empty_body("");
       decoder_callbacks_->encodeData(empty_body, true);
-      if(destroyed_ || done_) return;
     }
-    done_ = true;
+  }
+}
+
+void MyCacheFilter::onAboveWriteBufferHighWatermark() {
+  high_watermark_counter_++;
+}
+
+void MyCacheFilter::onBelowWriteBufferLowWatermark() {
+  if (high_watermark_counter_ > 0) high_watermark_counter_--;
+  if (high_watermark_counter_ == 0) {
+    
+    //cant call pull() directly because of stack re-entrancy????
+    decoder_callbacks_->dispatcher().post([weak = weak_from_this()]() {
+      if (auto self = weak.lock()) self->pull();
+    });
   }
 }
 
