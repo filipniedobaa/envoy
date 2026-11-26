@@ -19,6 +19,9 @@ namespace HttpFilters {
 namespace MyCacheFilter {
   
 constexpr uint64_t kMaxBytesPushWhileHighWatermark = 32 * 1024 * 1024; //  32 MiB
+constexpr size_t kZeroCopyThreshold = 16 * 1024;   // below this, copying beats a fragment
+
+
 
 Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& headers,
                                                        bool) {
@@ -166,15 +169,20 @@ void MyCacheFilter::pull(){
 
   SharedBody::Read read = body_->readFrom(cursor_);
   for(auto chunk : read.chunks){
-
-    auto* fragment = new Buffer::BufferFragmentImpl(
+    Buffer::OwnedImpl buffer;
+    if (chunk->size() < kZeroCopyThreshold) {
+      buffer.add(chunk->data(), chunk->size());         // small: copy
+    } 
+    else { //big: pass a fragment
+      auto* fragment = new Buffer::BufferFragmentImpl(
       chunk->data(), chunk->size(),
       [chunk](const void*, size_t, const Buffer::BufferFragmentImpl* self){
-        delete self;
+        delete self; //releaser
       });
 
-    Buffer::OwnedImpl buffer;
-    buffer.addBufferFragment(*fragment);
+      buffer.addBufferFragment(*fragment);
+    }
+    
     decoder_callbacks_->encodeData(buffer, false);
     cursor_++;
     if(destroyed_ || done_ || high_watermark_counter_ > 0) return;

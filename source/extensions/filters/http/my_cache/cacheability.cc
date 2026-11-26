@@ -43,9 +43,12 @@ namespace MyCacheFilter {
 
 
 bool isShareable(const Http::ResponseHeaderMap& headers){
-  if(!headers.get(Http::LowerCaseString("Set-Cookie")).empty()) return false;
+  static const Http::LowerCaseString kSetCookie("Set-Cookie");
+  static const Http::LowerCaseString kCacheControl("cache-control");
 
-  auto cc_res = headers.get(Http::LowerCaseString("cache-control"));
+  if(!headers.get(kSetCookie).empty()) return false;
+
+  auto cc_res = headers.get(kCacheControl);
   absl::string_view raw = cc_res.empty() ? "" : cc_res[0]->value().getStringView();
   std::string cache_control = absl::AsciiStrToLower(raw);
 
@@ -55,27 +58,35 @@ bool isShareable(const Http::ResponseHeaderMap& headers){
 }
 
 bool requestMayCache(const Http::RequestHeaderMap& headers){
-  if(!headers.get(Http::LowerCaseString("Range")).empty()
-  || !headers.get(Http::LowerCaseString("If-None-Match")).empty()
-  || !headers.get(Http::LowerCaseString("If-Modified-Since")).empty()
-  || !headers.get(Http::LowerCaseString("If-Match")).empty()
-  || !headers.get(Http::LowerCaseString("If-Unmodified-Since")).empty()
-  || !headers.get(Http::LowerCaseString("If-Range")).empty()
-  || !headers.get(Http::LowerCaseString("Authorization")).empty()
-  || !headers.get(Http::LowerCaseString("Cookie")).empty()) return false;
+  static const Http::LowerCaseString kRange("Range");
+  static const Http::LowerCaseString kIfNoneMatch("If-None-Match");
+  static const Http::LowerCaseString kIfModifiedSince("If-Modified-Since");
+  static const Http::LowerCaseString kIfMatch("If-Match");
+  static const Http::LowerCaseString kIfUnmodifiedSince("If-Unmodified-Since");
+  static const Http::LowerCaseString kIfRange("If-Range");
+  static const Http::LowerCaseString kAuthorization("Authorization");
   
-  return true;
+  return headers.get(kRange).empty()
+      && headers.get(kIfNoneMatch).empty()
+      && headers.get(kIfModifiedSince).empty()
+      && headers.get(kIfMatch).empty()
+      && headers.get(kIfUnmodifiedSince).empty()
+      && headers.get(kIfRange).empty()
+      && headers.get(kAuthorization).empty();
 }
 
 std::optional<LifeTimeAndAge> cacheableFor(const Http::ResponseHeaderMap& headers)
 {
-  if(headers.getStatusValue() != "200")return std::nullopt;
+  static const Http::LowerCaseString kSetCookie("Set-Cookie");
+  static const Http::LowerCaseString kCacheControl("cache-control");
+  static const Http::LowerCaseString kAge("Age");
 
-  if(!headers.get(Http::LowerCaseString("Set-Cookie")).empty()) return std::nullopt;
+  if(headers.getStatusValue() != "200")return std::nullopt;
+  if(!headers.get(kSetCookie).empty()) return std::nullopt;
                                                   
-  auto cc_res = headers.get(Http::LowerCaseString("cache-control"));
+  auto cc_res = headers.get(kCacheControl);
+  auto age_res = headers.get(kAge);
   
-  auto age_res = headers.get(Http::LowerCaseString("Age"));
   uint64_t age = 0;
   if(!age_res.empty()) {
     if(!absl::SimpleAtoi(age_res[0]->value().getStringView(), &age))
