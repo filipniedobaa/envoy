@@ -168,7 +168,9 @@ void MyCacheFilter::pull(){
   if(body_ == nullptr) return;
 
   SharedBody::Read read = body_->readFrom(cursor_);
-  for(auto chunk : read.chunks){
+  for(size_t i = 0; i < read.chunks.size(); i++){
+    const auto& chunk = read.chunks[i];
+
     Buffer::OwnedImpl buffer;
     if (chunk->size() < kZeroCopyThreshold) {
       buffer.add(chunk->data(), chunk->size());         // small: copy
@@ -182,8 +184,12 @@ void MyCacheFilter::pull(){
 
       buffer.addBufferFragment(*fragment);
     }
+    bool end_stream = (i + 1 == read.chunks.size()) 
+                    && read.complete 
+                    && read.trailers == nullptr;
     
-    decoder_callbacks_->encodeData(buffer, false);
+    decoder_callbacks_->encodeData(buffer, end_stream);
+    done_ = end_stream;
     cursor_++;
     if(destroyed_ || done_ || high_watermark_counter_ > 0) return;
   }
@@ -194,8 +200,8 @@ void MyCacheFilter::pull(){
       decoder_callbacks_->encodeTrailers(std::move(read.trailers));
     }
     else{
-      Buffer::OwnedImpl empty_body("");
-      decoder_callbacks_->encodeData(empty_body, true);
+      Buffer::OwnedImpl emptyBody("");
+      decoder_callbacks_->encodeData(emptyBody, true);
     }
   }
 }
