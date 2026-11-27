@@ -54,7 +54,9 @@ Http::FilterHeadersStatus MyCacheFilter::decodeHeaders(Http::RequestHeaderMap& h
   }
 
   case LookupResult::Kind::Leader: {
-    Upstream::ThreadLocalCluster* cluster = cluster_manager_.getThreadLocalCluster("origin");
+    Upstream::ThreadLocalCluster* cluster = cluster_manager_.getThreadLocalCluster(
+      decoder_callbacks_->route()->routeEntry()->clusterName()
+    );
     if (cluster == nullptr ||
         !lookup_result.in_flight->start(
             *cluster, Http::createHeaderMap<Http::RequestHeaderMapImpl>(headers))) {
